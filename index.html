@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Address Collector | Map Drawing Tool</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="2"/>
+                        <circle cx="16" cy="12" r="4" fill="currentColor"/>
+                        <path d="M16 16C19.5 16 22.5 18.5 23 22H9C9.5 18.5 12.5 16 16 16Z" fill="currentColor"/>
+                    </svg>
+                </div>
+                <h1>Address Collector</h1>
+                <button id="toggle-sidebar" class="sidebar-toggle" title="Collapse sidebar">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15,18 9,12 15,6"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Search Box -->
+            <div class="search-container">
+                <div class="search-box">
+                    <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"/>
+                        <path d="M21 21l-4.35-4.35"/>
+                    </svg>
+                    <input type="text" id="location-search" placeholder="Search for a location..." autocomplete="off">
+                </div>
+                <div id="search-results" class="search-results"></div>
+            </div>
+
+            <!-- Drawing Controls -->
+            <div class="drawing-controls">
+                <h3>Drawing Tools</h3>
+                <div class="tool-buttons">
+                    <button id="draw-polygon" class="tool-btn" title="Draw polygon">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 2L2 7L12 12L22 7L12 2Z"/>
+                            <path d="M2 17L12 22L22 17"/>
+                            <path d="M2 12L12 17L22 12"/>
+                        </svg>
+                        <span>Polygon</span>
+                    </button>
+                    <button id="draw-circle" class="tool-btn" title="Draw circle">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                        </svg>
+                        <span>Circle</span>
+                    </button>
+                    <button id="draw-rectangle" class="tool-btn" title="Draw rectangle">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2"/>
+                        </svg>
+                        <span>Rectangle</span>
+                    </button>
+                    <button id="draw-polyline" class="tool-btn" title="Draw line">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3,12 7,8 13,14 17,10 21,14"/>
+                        </svg>
+                        <span>Line</span>
+                    </button>
+                    <button id="clear-drawings" class="tool-btn danger" title="Clear all drawings">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 6h18"/>
+                            <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/>
+                            <path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                        </svg>
+                        <span>Clear</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Lists Section -->
+            <div class="lists-section">
+                <div class="lists-header">
+                    <h3>Address Lists</h3>
+                    <button id="new-list-btn" class="new-list-btn" title="Create new list">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 5v14M5 12h14"/>
+                        </svg>
+                    </button>
+                </div>
+                <div id="lists-container" class="lists-container">
+                    <!-- Lists will be dynamically added here -->
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Map Area -->
+        <main class="main-content">
+            <div id="map"></div>
+            
+            <!-- Status Bar -->
+            <div class="status-bar">
+                <div class="status-item">
+                    <span id="coordinates">Lat: --, Lng: --</span>
+                </div>
+                <div class="status-item">
+                    <span id="zoom-level">Zoom: --</span>
+                </div>
+                <div class="status-item fetch-status-container">
+                    <span id="fetch-status">Ready</span>
+                    <div class="fetch-progress" id="fetch-progress">
+                        <div class="fetch-progress-bar" id="fetch-progress-bar"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Toast Notification -->
+            <div class="toast" id="toast">
+                <span id="toast-message"></span>
+            </div>
+        </main>
+
+        <!-- Addresses Panel (Right Side) -->
+        <aside class="addresses-panel" id="addresses-panel">
+            <div class="panel-header">
+                <h2 id="current-list-name">No List Selected</h2>
+                <div class="panel-actions">
+                    <button id="enrich-addresses" class="action-btn" title="Fill missing city/state/zip" disabled>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M12 6v6l4 2"/>
+                        </svg>
+                    </button>
+                    <button id="export-csv" class="action-btn" title="Export to CSV" disabled>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                            <polyline points="7,10 12,15 17,10"/>
+                            <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                    </button>
+                    <button id="toggle-panel" class="action-btn" title="Collapse panel">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="9,18 15,12 9,6"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            
+            <div class="addresses-stats">
+                <div class="stat">
+                    <span class="stat-value" id="address-count">0</span>
+                    <span class="stat-label">Addresses</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="unique-zips">0</span>
+                    <span class="stat-label">Zip Codes</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value" id="unique-cities">0</span>
+                    <span class="stat-label">Cities</span>
+                </div>
+            </div>
+
+            <div class="addresses-table-container">
+                <table class="addresses-table" id="addresses-table">
+                    <thead>
+                        <tr>
+                            <th>Address</th>
+                            <th>City</th>
+                            <th>State</th>
+                            <th>Zip</th>
+                            <th>Latitude</th>
+                            <th>Longitude</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="addresses-body">
+                        <!-- Addresses will be added here -->
+                    </tbody>
+                </table>
+                <div class="empty-state" id="empty-state">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/>
+                        <circle cx="12" cy="10" r="3"/>
+                    </svg>
+                    <p>Draw a shape on the map to collect addresses</p>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- New List Modal -->
+    <div class="modal-overlay" id="new-list-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Create New List</h3>
+                <button class="modal-close" id="modal-close">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <label for="list-name">List Name</label>
+                <input type="text" id="list-name" placeholder="e.g., Downtown Properties">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="modal-cancel">Cancel</button>
+                <button class="btn btn-primary" id="modal-create">Create List</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="loading-spinner"></div>
+        <p>Fetching addresses...</p>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+    <!-- Esri Leaflet for ArcGIS integration -->
+    <script src="https://unpkg.com/esri-leaflet@3.0.12/dist/esri-leaflet.js"></script>
+    <script src="https://unpkg.com/esri-leaflet-vector@4.2.3/dist/esri-leaflet-vector.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
+
