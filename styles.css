@@ -474,6 +474,16 @@ body {
     z-index: 1000 !important;
 }
 
+/* Building footprints overlay */
+.building-footprint {
+    cursor: pointer;
+    transition: fill-opacity 0.2s;
+}
+
+.building-footprint:hover {
+    fill-opacity: 0.5 !important;
+}
+
 .leaflet-control-zoom {
     border: none !important;
     box-shadow: var(--shadow-md) !important;

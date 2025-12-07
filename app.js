@@ -17,7 +17,8 @@ const state = {
     addressMarkers: null, // Layer group for address pins
     satelliteLayer: null,
     labelsLayer: null,
-    arcgisOverlay: null
+    arcgisOverlay: null,
+    buildingOverlay: null // Layer for showing building footprints
 };
 
 // ========================================
@@ -160,10 +161,30 @@ function initMap() {
         console.log('Vertex added, total vertices:', e.layers ? e.layers.getLayers().length : 'N/A');
     });
     
+    // Initialize building overlay layer
+    state.buildingOverlay = L.layerGroup().addTo(state.map);
+    
     // Update coordinates and zoom on mouse move/zoom
     state.map.on('mousemove', (e) => {
         document.getElementById('coordinates').textContent = 
             `Lat: ${e.latlng.lat.toFixed(5)}, Lng: ${e.latlng.lng.toFixed(5)}`;
+    });
+    
+    // Load building footprints when zoomed in
+    state.map.on('zoomend', () => {
+        const zoom = state.map.getZoom();
+        if (zoom >= 17) {
+            loadBuildingFootprints();
+        } else {
+            state.buildingOverlay.clearLayers();
+        }
+    });
+    
+    state.map.on('moveend', () => {
+        const zoom = state.map.getZoom();
+        if (zoom >= 17) {
+            loadBuildingFootprints();
+        }
     });
     
     state.map.on('zoomend', () => {
@@ -391,41 +412,26 @@ function clearDrawings() {
 // Address Fetching (Background Process)
 // ========================================
 
-// Grid cell size in degrees (roughly 100m = ~0.001 degrees)
-const GRID_CELL_SIZE = 0.002; // About 200m per cell
-const MAX_CONCURRENT_REQUESTS = 3;
-const REQUEST_DELAY = 1000; // 1 second between batches to avoid rate limiting
+// Search configuration - fast single-query approach
+const SEARCH_CONFIG = {
+    MAX_BUILDINGS: 100,          // Max buildings to process
+    BATCH_SIZE: 5,               // Parallel reverse geocode requests
+    BATCH_DELAY: 200             // Delay between batches (ms)
+};
 
-// Background fetch process
+// Fast single-query fetch for entire area
 async function fetchAddressesInBackground(layer, shapeType) {
     const fetchStatus = document.getElementById('fetch-status');
     const progressContainer = document.getElementById('fetch-progress');
     const progressBar = document.getElementById('fetch-progress-bar');
     
-    fetchStatus.textContent = 'Preparing...';
+    fetchStatus.textContent = 'Finding buildings...';
     fetchStatus.className = 'status-item loading';
     progressContainer.classList.add('active');
-    progressBar.style.width = '0%';
-    
-    showToast('🔍 Fetching addresses in the background...');
+    progressBar.style.width = '10%';
     
     try {
-        let bounds;
-        let polygon = null;
-        let center = null;
-        let radius = null;
-        
-        if (shapeType === 'circle') {
-            center = layer.getLatLng();
-            radius = layer.getRadius();
-            bounds = layer.getBounds();
-        } else {
-            bounds = layer.getBounds();
-            if (layer.getLatLngs) {
-                const latLngs = layer.getLatLngs();
-                polygon = extractPolygonPoints(latLngs);
-            }
-        }
+        const bounds = layer.getBounds();
         
         if (!bounds || !bounds.isValid()) {
             fetchStatus.textContent = 'Invalid area';
@@ -435,79 +441,261 @@ async function fetchAddressesInBackground(layer, shapeType) {
             return;
         }
         
-        // Calculate grid cells to cover the area
-        const cells = generateGridCells(bounds, polygon, center, radius);
-        console.log(`Generated ${cells.length} grid cells to search`);
+        // Get shape details for filtering
+        let polygon = null;
+        let center = null;
+        let radius = null;
         
-        if (cells.length === 0) {
-            fetchStatus.textContent = 'No valid area';
-            fetchStatus.className = 'status-item error';
+        if (shapeType === 'circle') {
+            center = layer.getLatLng();
+            radius = layer.getRadius();
+        } else if (layer.getLatLngs) {
+            polygon = extractPolygonPoints(layer.getLatLngs());
+        }
+        
+        const south = bounds.getSouth();
+        const west = bounds.getWest();
+        const north = bounds.getNorth();
+        const east = bounds.getEast();
+        
+        console.log(`Searching area: ${south.toFixed(5)},${west.toFixed(5)} to ${north.toFixed(5)},${east.toFixed(5)}`);
+        showToast('🔍 Finding buildings...');
+        
+        // Single query for ALL buildings in the bounding box
+        const query = `
+            [out:json][timeout:30];
+            (
+                way["building"](${south},${west},${north},${east});
+            );
+            out center;
+        `;
+        
+        const response = await fetch('https://overpass-api.de/api/interpreter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'data=' + encodeURIComponent(query)
+        });
+        
+        if (!response.ok) {
+            throw new Error(`Overpass API error: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        progressBar.style.width = '30%';
+        
+        if (!data.elements || data.elements.length === 0) {
+            fetchStatus.textContent = 'No buildings';
+            fetchStatus.className = 'status-item';
             progressContainer.classList.remove('active');
-            showToast('❌ No valid area to search', 'error');
+            showToast('⚠️ No buildings found in this area');
             return;
         }
         
-        showToast(`📍 Searching ${cells.length} areas...`);
+        console.log(`Found ${data.elements.length} buildings in bounding box`);
         
-        // Fetch addresses in background
-        let totalFound = 0;
-        let processed = 0;
+        // Filter buildings to only those INSIDE the drawn shape
+        const buildings = [];
+        const seen = new Set();
+        let filteredOut = 0;
         
-        // Process cells in batches
-        for (let i = 0; i < cells.length; i += MAX_CONCURRENT_REQUESTS) {
-            const batch = cells.slice(i, i + MAX_CONCURRENT_REQUESTS);
-            const progress = Math.round((processed / cells.length) * 100);
-            
-            // Update status and progress bar
-            fetchStatus.textContent = `${progress}% (${totalFound} found)`;
+        for (const el of data.elements) {
+            if (el.center) {
+                const lat = el.center.lat;
+                const lng = el.center.lon;
+                
+                // Check if building is inside the drawn shape
+                let isInside = true;
+                
+                if (center && radius) {
+                    // Circle: check distance from center
+                    const distance = haversineDistance(center.lat, center.lng, lat, lng);
+                    isInside = distance <= radius;
+                } else if (polygon && polygon.length > 0) {
+                    // Polygon: check if point is inside
+                    isInside = isPointInPolygon(lat, lng, polygon);
+                }
+                
+                if (isInside) {
+                    const key = `${lat.toFixed(4)}-${lng.toFixed(4)}`;
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        buildings.push({ lat, lng });
+                    }
+                } else {
+                    filteredOut++;
+                }
+            }
+        }
+        
+        console.log(`${buildings.length} buildings inside shape, ${filteredOut} filtered out`);
+        
+        if (buildings.length === 0) {
+            fetchStatus.textContent = 'No buildings in area';
+            fetchStatus.className = 'status-item';
+            progressContainer.classList.remove('active');
+            showToast('⚠️ No buildings found inside the drawn area');
+            return;
+        }
+        
+        fetchStatus.textContent = `${buildings.length} buildings, geocoding...`;
+        showToast(`🏠 Found ${buildings.length} buildings inside area, getting addresses...`);
+        
+        // Limit to 100 buildings max for speed
+        const maxBuildings = 100;
+        const toProcess = buildings.slice(0, maxBuildings);
+        
+        if (buildings.length > maxBuildings) {
+            console.log(`Limited to ${maxBuildings} of ${buildings.length} buildings`);
+        }
+        
+        // Reverse geocode buildings in parallel batches for speed
+        const addresses = [];
+        const batchSize = 5;
+        
+        for (let i = 0; i < toProcess.length; i += batchSize) {
+            const batch = toProcess.slice(i, i + batchSize);
+            const progress = 30 + Math.round((i / toProcess.length) * 60);
             progressBar.style.width = `${progress}%`;
+            fetchStatus.textContent = `${addresses.length} addresses (${Math.round(i/toProcess.length*100)}%)`;
             
-            // Fetch batch in parallel
+            // Parallel reverse geocoding
             const results = await Promise.all(
-                batch.map(cell => fetchAddressesForCell(cell))
+                batch.map(b => reverseGeocode(b.lat, b.lng))
             );
             
-            // Process results
-            for (const addresses of results) {
-                if (addresses && addresses.length > 0) {
-                    addAddressesToCurrentList(addresses);
-                    totalFound += addresses.length;
+            // Add valid addresses - verify they're inside the shape
+            for (let j = 0; j < results.length; j++) {
+                const loc = results[j];
+                const building = batch[j];
+                
+                if (loc && loc.address) {
+                    const isDupe = addresses.some(a => a.address === loc.address);
+                    if (!isDupe) {
+                        addresses.push({
+                            id: generateId(),
+                            address: loc.address,
+                            city: loc.city || '',
+                            state: loc.state || '',
+                            zipcode: loc.zipcode || '',
+                            lat: building.lat.toFixed(6),
+                            lng: building.lng.toFixed(6)
+                        });
+                    }
                 }
             }
             
-            processed += batch.length;
-            
-            // Small delay to avoid rate limiting
-            if (i + MAX_CONCURRENT_REQUESTS < cells.length) {
-                await sleep(REQUEST_DELAY);
+            // Small delay between batches
+            if (i + batchSize < toProcess.length) {
+                await sleep(200);
             }
         }
         
-        // Final status
+        // Add addresses to list
         progressBar.style.width = '100%';
         
-        if (totalFound > 0) {
-            fetchStatus.textContent = `${totalFound} addresses`;
+        if (addresses.length > 0) {
+            addAddressesToCurrentList(addresses);
+            fetchStatus.textContent = `${addresses.length} addresses`;
             fetchStatus.className = 'status-item';
-            showToast(`✅ Found ${totalFound} addresses!`, 'success');
+            showToast(`✅ Found ${addresses.length} addresses!`, 'success');
         } else {
             fetchStatus.textContent = 'No addresses';
             fetchStatus.className = 'status-item';
-            showToast('⚠️ No addresses found in this area');
+            showToast('⚠️ Could not get addresses for buildings');
         }
         
-        // Hide progress bar after a delay
-        setTimeout(() => {
-            progressContainer.classList.remove('active');
-        }, 2000);
+        console.log(`Done: ${addresses.length} addresses from ${toProcess.length} buildings`);
+        
+        setTimeout(() => progressContainer.classList.remove('active'), 2000);
         
     } catch (error) {
-        console.error('Error in background fetch:', error);
+        console.error('Error:', error);
         fetchStatus.textContent = 'Error';
         fetchStatus.className = 'status-item error';
         progressContainer.classList.remove('active');
         showToast('❌ Error fetching addresses', 'error');
     }
+}
+
+// Load building footprints when zoomed in (zoom >= 17)
+let buildingLoadTimeout = null;
+async function loadBuildingFootprints() {
+    // Debounce to avoid too many requests
+    if (buildingLoadTimeout) {
+        clearTimeout(buildingLoadTimeout);
+    }
+    
+    buildingLoadTimeout = setTimeout(async () => {
+        const bounds = state.map.getBounds();
+        const south = bounds.getSouth();
+        const west = bounds.getWest();
+        const north = bounds.getNorth();
+        const east = bounds.getEast();
+        
+        // Only load for small areas (prevent huge requests)
+        const area = (north - south) * (east - west);
+        if (area > 0.001) {
+            console.log('Area too large for building overlay');
+            return;
+        }
+        
+        try {
+            const query = `
+                [out:json][timeout:15];
+                (
+                    way["building"](${south},${west},${north},${east});
+                );
+                out geom;
+            `;
+            
+            const response = await fetch('https://overpass-api.de/api/interpreter', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'data=' + encodeURIComponent(query)
+            });
+            
+            if (!response.ok) return;
+            
+            const data = await response.json();
+            
+            // Clear existing overlay
+            state.buildingOverlay.clearLayers();
+            
+            if (!data.elements) return;
+            
+            // Draw building footprints
+            for (const el of data.elements) {
+                if (el.geometry) {
+                    const coords = el.geometry.map(p => [p.lat, p.lon]);
+                    
+                    const polygon = L.polygon(coords, {
+                        color: '#3b82f6',
+                        weight: 1,
+                        fillColor: '#3b82f6',
+                        fillOpacity: 0.2,
+                        className: 'building-footprint'
+                    });
+                    
+                    // Add popup with address if available
+                    const tags = el.tags || {};
+                    let popupContent = '<b>Building</b>';
+                    if (tags['addr:housenumber'] && tags['addr:street']) {
+                        popupContent = `<b>${tags['addr:housenumber']} ${tags['addr:street']}</b>`;
+                    } else if (tags.name) {
+                        popupContent = `<b>${tags.name}</b>`;
+                    }
+                    
+                    polygon.bindPopup(popupContent);
+                    state.buildingOverlay.addLayer(polygon);
+                }
+            }
+            
+            console.log(`Loaded ${data.elements.length} building footprints`);
+            
+        } catch (error) {
+            console.warn('Failed to load building footprints:', error);
+        }
+    }, 500);
 }
 
 // Show toast notification
@@ -541,7 +729,34 @@ function extractPolygonPoints(latLngs) {
     return null;
 }
 
-// Generate grid cells to cover the bounding area
+// Calculate cell size - always 1km, scale up only if too many cells
+function calculateCellSize(bounds) {
+    const south = bounds.getSouth();
+    const west = bounds.getWest();
+    const north = bounds.getNorth();
+    const east = bounds.getEast();
+    
+    const latRange = north - south;
+    const lngRange = east - west;
+    
+    let cellSize = SEARCH_CONFIG.CELL_SIZE; // 1km default
+    
+    // Calculate how many cells this would create
+    const estCells = Math.ceil(latRange / cellSize) * Math.ceil(lngRange / cellSize);
+    
+    // If too many cells, scale up cell size
+    if (estCells > SEARCH_CONFIG.MAX_CELLS) {
+        const scale = Math.sqrt(estCells / SEARCH_CONFIG.MAX_CELLS);
+        cellSize = cellSize * scale;
+        console.log(`Area too large, scaled cell size to ${(cellSize * 111).toFixed(1)}km`);
+    }
+    
+    console.log(`Using ${(cellSize * 111).toFixed(1)}km cells, estimated ${Math.ceil(latRange / cellSize) * Math.ceil(lngRange / cellSize)} cells`);
+    
+    return cellSize;
+}
+
+// Generate 1km grid cells - no overlap for speed
 function generateGridCells(bounds, polygon, center, radius) {
     const cells = [];
     
@@ -550,28 +765,16 @@ function generateGridCells(bounds, polygon, center, radius) {
     const north = bounds.getNorth();
     const east = bounds.getEast();
     
-    // Calculate number of cells
-    const latSteps = Math.ceil((north - south) / GRID_CELL_SIZE);
-    const lngSteps = Math.ceil((east - west) / GRID_CELL_SIZE);
+    // Get cell size (1km default, scales up for very large areas)
+    const cellSize = calculateCellSize(bounds);
     
-    // Limit total cells to prevent massive requests
-    const maxCells = 100;
-    let actualLatStep = GRID_CELL_SIZE;
-    let actualLngStep = GRID_CELL_SIZE;
-    
-    if (latSteps * lngSteps > maxCells) {
-        // Increase cell size to fit within limit
-        const scale = Math.sqrt((latSteps * lngSteps) / maxCells);
-        actualLatStep = GRID_CELL_SIZE * scale;
-        actualLngStep = GRID_CELL_SIZE * scale;
-    }
-    
-    for (let lat = south; lat < north; lat += actualLatStep) {
-        for (let lng = west; lng < east; lng += actualLngStep) {
+    // Generate non-overlapping grid
+    for (let lat = south; lat < north; lat += cellSize) {
+        for (let lng = west; lng < east; lng += cellSize) {
             const cellSouth = lat;
-            const cellNorth = Math.min(lat + actualLatStep, north);
+            const cellNorth = Math.min(lat + cellSize, north);
             const cellWest = lng;
-            const cellEast = Math.min(lng + actualLngStep, east);
+            const cellEast = Math.min(lng + cellSize, east);
             
             // Check if cell center is within the shape
             const cellCenterLat = (cellSouth + cellNorth) / 2;
@@ -600,6 +803,7 @@ function generateGridCells(bounds, polygon, center, radius) {
         }
     }
     
+    console.log(`Generated ${cells.length} non-overlapping 1km cells`);
     return cells;
 }
 
@@ -619,16 +823,16 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
     return R * c;
 }
 
-// Fetch addresses for a single grid cell
+// Fetch addresses using BUILDING-BASED approach
+// Find all buildings in cell, then reverse geocode each to get address
 async function fetchAddressesForCell(cell) {
     try {
+        // Query for ALL buildings in the cell
         const query = `
             [out:json][timeout:30];
             (
-                node["addr:housenumber"](${cell.south},${cell.west},${cell.north},${cell.east});
-                way["addr:housenumber"](${cell.south},${cell.west},${cell.north},${cell.east});
-                node["addr:full"](${cell.south},${cell.west},${cell.north},${cell.east});
-                way["addr:full"](${cell.south},${cell.west},${cell.north},${cell.east});
+                way["building"](${cell.south},${cell.west},${cell.north},${cell.east});
+                relation["building"](${cell.south},${cell.west},${cell.north},${cell.east});
             );
             out center;
         `;
@@ -642,22 +846,119 @@ async function fetchAddressesForCell(cell) {
         });
         
         if (!response.ok) {
+            if (response.status === 429) {
+                console.warn('Rate limited, waiting 2s and retrying...');
+                await sleep(2000);
+                return fetchAddressesForCell(cell);
+            }
             console.warn(`Cell fetch failed: ${response.status}`);
             return [];
         }
         
         const data = await response.json();
-        const addresses = processOverpassData(data, null);
         
-        // Fill in missing city, state, zipcode using reverse geocoding
-        const enrichedAddresses = await enrichAddressesWithLocation(addresses);
-        return enrichedAddresses;
+        if (!data.elements || data.elements.length === 0) {
+            return [];
+        }
+        
+        console.log(`Found ${data.elements.length} buildings in cell`);
+        
+        // Extract building centers
+        const buildings = [];
+        const seen = new Set();
+        
+        for (const element of data.elements) {
+            let lat, lng;
+            
+            if (element.center) {
+                lat = element.center.lat;
+                lng = element.center.lon;
+            } else if (element.lat && element.lon) {
+                lat = element.lat;
+                lng = element.lon;
+            } else {
+                continue;
+            }
+            
+            // Skip if we've seen a building very close to this one (within ~10m)
+            const key = `${lat.toFixed(4)}-${lng.toFixed(4)}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            
+            buildings.push({ lat, lng, tags: element.tags || {} });
+        }
+        
+        // Limit buildings per cell to avoid too many reverse geocode requests
+        const maxBuildings = SEARCH_CONFIG.MAX_BUILDINGS_PER_CELL || 50;
+        const limitedBuildings = buildings.slice(0, maxBuildings);
+        
+        if (buildings.length > maxBuildings) {
+            console.log(`Limited to ${maxBuildings} of ${buildings.length} buildings`);
+        }
+        
+        // Reverse geocode each building to get its address
+        const addresses = [];
+        let successCount = 0;
+        let failCount = 0;
+        let dupeCount = 0;
+        
+        console.log(`Starting reverse geocoding for ${limitedBuildings.length} buildings...`);
+        
+        for (let i = 0; i < limitedBuildings.length; i++) {
+            const building = limitedBuildings[i];
+            
+            try {
+                const locationData = await reverseGeocode(building.lat, building.lng);
+                
+                if (locationData && locationData.address) {
+                    // Check for duplicate addresses
+                    const isDupe = addresses.some(a => 
+                        a.address === locationData.address && 
+                        Math.abs(parseFloat(a.lat) - building.lat) < 0.0002
+                    );
+                    
+                    if (!isDupe) {
+                        addresses.push({
+                            id: generateId(),
+                            address: locationData.address,
+                            city: locationData.city || '',
+                            state: locationData.state || '',
+                            zipcode: locationData.zipcode || '',
+                            lat: building.lat.toFixed(6),
+                            lng: building.lng.toFixed(6)
+                        });
+                        successCount++;
+                    } else {
+                        dupeCount++;
+                    }
+                } else {
+                    failCount++;
+                    console.log(`No address for building ${i+1} at ${building.lat.toFixed(5)}, ${building.lng.toFixed(5)}`);
+                }
+                
+                // Log progress every 10 buildings
+                if ((i + 1) % 10 === 0) {
+                    console.log(`Processed ${i + 1}/${limitedBuildings.length} buildings...`);
+                }
+                
+                // Small delay between reverse geocode requests
+                await sleep(150);
+                
+            } catch (error) {
+                failCount++;
+                console.warn('Reverse geocode failed for building:', error);
+            }
+        }
+        
+        console.log(`Reverse geocoding complete: ${successCount} addresses, ${dupeCount} duplicates, ${failCount} failed`);
+        return addresses;
         
     } catch (error) {
         console.warn('Error fetching cell:', error);
         return [];
     }
 }
+
 
 // Reverse geocode to fill in missing city, state, zipcode
 async function enrichAddressesWithLocation(addresses) {
@@ -704,7 +1005,7 @@ async function enrichAddressesWithLocation(addresses) {
     return addresses;
 }
 
-// Reverse geocode a single lat/lng to get city, state, zipcode
+// Reverse geocode a single lat/lng to get full address details
 async function reverseGeocode(lat, lng) {
     try {
         const response = await fetch(
@@ -718,21 +1019,63 @@ async function reverseGeocode(lat, lng) {
         );
         
         if (!response.ok) {
+            if (response.status === 429) {
+                // Rate limited, wait and retry
+                console.log('Rate limited, waiting 1s...');
+                await sleep(1000);
+                return reverseGeocode(lat, lng);
+            }
+            console.warn(`Reverse geocode HTTP error: ${response.status}`);
             return null;
         }
         
         const data = await response.json();
         
         if (!data || !data.address) {
+            console.warn('No address data in response');
             return null;
         }
         
-        const address = data.address;
+        const addr = data.address;
+        
+        // Build full street address - try multiple fallbacks
+        let fullAddress = '';
+        
+        if (addr.house_number && addr.road) {
+            // Best case: house number + street
+            fullAddress = `${addr.house_number} ${addr.road}`;
+        } else if (addr.house_number && addr.street) {
+            fullAddress = `${addr.house_number} ${addr.street}`;
+        } else if (addr.road && addr.house_number) {
+            fullAddress = `${addr.house_number} ${addr.road}`;
+        } else if (addr.road) {
+            // Just road name
+            fullAddress = addr.road;
+        } else if (addr.street) {
+            fullAddress = addr.street;
+        } else if (addr.building) {
+            fullAddress = addr.building;
+        } else if (addr.amenity) {
+            fullAddress = addr.amenity;
+        } else if (addr.shop) {
+            fullAddress = addr.shop;
+        } else if (addr.name) {
+            fullAddress = addr.name;
+        } else if (data.display_name) {
+            // Use first part of display name as fallback
+            fullAddress = data.display_name.split(',')[0];
+        }
+        
+        // If still no address, return null
+        if (!fullAddress || fullAddress.trim() === '') {
+            return null;
+        }
         
         return {
-            city: address.city || address.town || address.village || address.municipality || address.county || '',
-            state: address.state || address.province || '',
-            zipcode: address.postcode || ''
+            address: fullAddress.trim(),
+            city: addr.city || addr.town || addr.village || addr.municipality || addr.hamlet || addr.suburb || addr.county || '',
+            state: addr.state || addr.province || addr.region || '',
+            zipcode: addr.postcode || ''
         };
         
     } catch (error) {
@@ -1027,7 +1370,7 @@ function processOverpassData(data, polygon = null) {
         const tags = element.tags || {};
         let lat, lng;
         
-        // Get coordinates
+        // Get coordinates - try multiple sources
         if (element.type === 'node') {
             lat = element.lat;
             lng = element.lon;
@@ -1037,9 +1380,16 @@ function processOverpassData(data, polygon = null) {
         } else if (element.lat && element.lon) {
             lat = element.lat;
             lng = element.lon;
+        } else if (element.bounds) {
+            // Use center of bounding box
+            lat = (element.bounds.minlat + element.bounds.maxlat) / 2;
+            lng = (element.bounds.minlon + element.bounds.maxlon) / 2;
         } else {
             continue;
         }
+        
+        // Skip if coordinates are invalid
+        if (!lat || !lng || isNaN(lat) || isNaN(lng)) continue;
         
         // If we have a polygon, check if point is inside
         if (polygon && polygon.length > 0 && !isPointInPolygon(lat, lng, polygon)) {
@@ -1054,21 +1404,39 @@ function processOverpassData(data, polygon = null) {
         const state = tags['addr:state'] || '';
         const zipcode = tags['addr:postcode'] || '';
         
-        // Try addr:full first, then construct from parts
+        // Try multiple ways to construct address
         if (tags['addr:full']) {
+            // Full address tag
             fullAddress = tags['addr:full'];
         } else if (houseNumber && street) {
+            // Standard house number + street
             fullAddress = `${houseNumber} ${street}`.trim();
+        } else if (houseNumber) {
+            // Just house number (might get street from nearby data)
+            fullAddress = houseNumber;
         } else if (street) {
+            // Street without number
             fullAddress = street;
-        } else if (tags['name'] && tags['building']) {
+        } else if (tags['addr:place'] && houseNumber) {
+            // Place-based address (common in rural areas)
+            fullAddress = `${houseNumber} ${tags['addr:place']}`.trim();
+        } else if (tags['name'] && (tags['building'] || tags['amenity'] || tags['shop'])) {
+            // Named place with building/amenity/shop tag
             fullAddress = tags['name'];
+        } else if (tags['addr:conscriptionnumber']) {
+            // Conscription number (used in some countries)
+            fullAddress = tags['addr:conscriptionnumber'];
+            if (street) fullAddress += ` ${street}`;
         }
         
+        // Skip if no address could be constructed
         if (!fullAddress) continue;
         
-        // Create unique key to avoid duplicates
-        const key = `${fullAddress}-${city}-${zipcode}-${lat.toFixed(4)}-${lng.toFixed(4)}`;
+        // Clean up the address
+        fullAddress = fullAddress.replace(/\s+/g, ' ').trim();
+        
+        // Create unique key to avoid duplicates - use coordinates with higher precision
+        const key = `${fullAddress.toLowerCase()}-${lat.toFixed(5)}-${lng.toFixed(5)}`;
         if (seen.has(key)) continue;
         seen.add(key);
         
@@ -1083,6 +1451,7 @@ function processOverpassData(data, polygon = null) {
         });
     }
     
+    console.log(`Processed ${addresses.length} unique addresses from ${data.elements.length} elements`);
     return addresses;
 }
 
@@ -1285,13 +1654,8 @@ function updateAddressMarkers(addresses) {
         state.addressMarkers.addLayer(marker);
     });
     
-    // Fit map to show all markers if there are any
-    if (addresses.length > 0) {
-        const group = new L.featureGroup(state.addressMarkers.getLayers());
-        if (group.getBounds().isValid()) {
-            state.map.fitBounds(group.getBounds().pad(0.1));
-        }
-    }
+    // Don't auto-zoom - let user control the map view
+    // Markers will appear at their locations without changing the current view
 }
 
 // ========================================
