@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSV Map Viewer | Address Collector</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <!-- Base Styles -->
+    <link rel="stylesheet" href="styles.css">
+    
+    <!-- Page Specific Styles -->
+    <style>
+        .csv-sidebar {
+            width: 380px;
+            min-width: 380px;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            z-index: 100;
+        }
+
+        .nav-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.85rem;
+            padding: 8px 12px;
+            border-radius: 6px;
+            transition: var(--transition-fast);
+            margin-left: auto;
+        }
+
+        .nav-link:hover {
+            color: var(--text-primary);
+            background: var(--bg-hover);
+        }
+
+        .upload-section {
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .upload-zone {
+            border: 2px dashed var(--border-color);
+            border-radius: 12px;
+            padding: 40px 20px;
+            text-align: center;
+            cursor: pointer;
+            transition: var(--transition-fast);
+            background: var(--bg-tertiary);
+        }
+
+        .upload-zone:hover,
+        .upload-zone.dragover {
+            border-color: var(--accent-primary);
+            background: rgba(59, 130, 246, 0.05);
+        }
+
+        .upload-zone svg {
+            width: 48px;
+            height: 48px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+        }
+
+        .upload-zone h3 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .upload-zone p {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .upload-zone input {
+            display: none;
+        }
+
+        .mode-section {
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .mode-section h3 {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+        }
+
+        .mode-toggle {
+            display: flex;
+            background: var(--bg-tertiary);
+            border-radius: 10px;
+            padding: 4px;
+            gap: 4px;
+        }
+
+        .mode-btn {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            padding: 14px 12px;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            font-family: inherit;
+            cursor: pointer;
+            transition: var(--transition-fast);
+        }
+
+        .mode-btn svg {
+            width: 24px;
+            height: 24px;
+        }
+
+        .mode-btn:hover {
+            color: var(--text-secondary);
+            background: var(--bg-hover);
+        }
+
+        .mode-btn.active {
+            background: var(--accent-gradient);
+            color: white;
+            box-shadow: var(--shadow-md);
+        }
+
+        .mode-description {
+            margin-top: 12px;
+            padding: 12px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .mode-description strong {
+            color: var(--accent-primary);
+        }
+
+        .stats-section {
+            padding: 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+
+        .stat-card {
+            background: var(--bg-tertiary);
+            border-radius: 10px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .stat-card .value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            background: var(--accent-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .stat-card .label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .data-preview {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            padding: 20px;
+        }
+
+        .data-preview h3 {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .clear-btn {
+            padding: 6px 12px;
+            background: transparent;
+            border: 1px solid var(--danger);
+            border-radius: 6px;
+            color: var(--danger);
+            font-size: 0.75rem;
+            font-family: inherit;
+            cursor: pointer;
+            transition: var(--transition-fast);
+        }
+
+        .clear-btn:hover {
+            background: rgba(239, 68, 68, 0.1);
+        }
+
+        .preview-table-container {
+            flex: 1;
+            overflow: auto;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+        }
+
+        .preview-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.75rem;
+        }
+
+        .preview-table thead {
+            position: sticky;
+            top: 0;
+            background: var(--bg-tertiary);
+            z-index: 10;
+        }
+
+        .preview-table th {
+            padding: 10px 8px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border-color);
+            white-space: nowrap;
+        }
+
+        .preview-table td {
+            padding: 8px;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            max-width: 100px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .preview-table td.coord {
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--accent-primary);
+        }
+
+        .preview-table tbody tr:hover {
+            background: var(--bg-hover);
+            cursor: pointer;
+        }
+
+        .preview-table tbody tr.highlighted {
+            background: rgba(59, 130, 246, 0.2);
+        }
+
+        .empty-preview {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-muted);
+            text-align: center;
+            padding: 40px;
+        }
+
+        .empty-preview svg {
+            width: 64px;
+            height: 64px;
+            opacity: 0.3;
+            margin-bottom: 16px;
+        }
+
+        .geocoding-progress {
+            margin-top: 16px;
+            padding: 16px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            display: none;
+        }
+
+        .geocoding-progress.active {
+            display: block;
+        }
+
+        .progress-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 0.85rem;
+        }
+
+        .progress-bar {
+            height: 6px;
+            background: var(--bg-secondary);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--accent-gradient);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        .map-controls {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .map-control-btn {
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: var(--transition-fast);
+            box-shadow: var(--shadow-md);
+        }
+
+        .map-control-btn:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+
+        .map-control-btn.active {
+            background: var(--accent-primary);
+            border-color: var(--accent-primary);
+            color: white;
+        }
+
+        /* Toast positioned differently for this page */
+        .csv-toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 12px 24px;
+            border-radius: 8px;
+            box-shadow: var(--shadow-lg);
+            z-index: 2000;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+        }
+
+        .csv-toast.show {
+            opacity: 1;
+            visibility: visible;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        .csv-toast.success {
+            border-color: var(--success);
+            background: rgba(16, 185, 129, 0.15);
+        }
+
+        .csv-toast.error {
+            border-color: var(--danger);
+            background: rgba(239, 68, 68, 0.15);
+        }
+
+        .csv-toast.warning {
+            border-color: var(--warning);
+            background: rgba(245, 158, 11, 0.15);
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="csv-sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="6" y="8" width="20" height="16" rx="2" stroke="currentColor" stroke-width="2"/>
+                        <path d="M6 12H26" stroke="currentColor" stroke-width="2"/>
+                        <path d="M12 12V24" stroke="currentColor" stroke-width="2"/>
+                    </svg>
+                </div>
+                <h1>CSV Map Viewer</h1>
+                <a href="index.html" class="nav-link">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M19 12H5M12 19l-7-7 7-7"/>
+                    </svg>
+                    Back
+                </a>
+            </div>
+
+            <!-- Upload Section -->
+            <div class="upload-section">
+                <div class="upload-zone" id="upload-zone">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                        <polyline points="17,8 12,3 7,8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    <h3>Drop CSV file here</h3>
+                    <p>or click to browse</p>
+                    <input type="file" id="file-input" accept=".csv">
+                </div>
+            </div>
+
+            <!-- Mode Toggle -->
+            <div class="mode-section">
+                <h3>Pin Placement Mode</h3>
+                <div class="mode-toggle">
+                    <button class="mode-btn active" id="mode-latlong" data-mode="latlong">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
+                        </svg>
+                        Lat/Long
+                    </button>
+                    <button class="mode-btn" id="mode-address" data-mode="address">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/>
+                            <circle cx="12" cy="10" r="3"/>
+                        </svg>
+                        Address
+                    </button>
+                </div>
+                <div class="mode-description" id="mode-description">
+                    <strong>Lat/Long Mode:</strong> Uses the Latitude and Longitude columns directly to place pins on the map. Fastest option.
+                </div>
+                <div class="geocoding-progress" id="geocoding-progress">
+                    <div class="progress-header">
+                        <span id="progress-text">Geocoding addresses...</span>
+                        <span id="progress-count">0/0</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stats -->
+            <div class="stats-section">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="value" id="stat-total">0</div>
+                        <div class="label">Total Rows</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value" id="stat-mapped">0</div>
+                        <div class="label">On Map</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value" id="stat-cities">0</div>
+                        <div class="label">Cities</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="value" id="stat-states">0</div>
+                        <div class="label">States</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Data Preview -->
+            <div class="data-preview">
+                <h3>
+                    Data Preview
+                    <button class="clear-btn" id="clear-btn" style="display: none;">Clear All</button>
+                </h3>
+                <div class="preview-table-container" id="preview-container">
+                    <div class="empty-preview" id="empty-preview">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <rect x="3" y="3" width="18" height="18" rx="2"/>
+                            <path d="M3 9h18"/>
+                            <path d="M9 21V9"/>
+                        </svg>
+                        <p>Upload a CSV file to see your data here</p>
+                    </div>
+                    <table class="preview-table" id="preview-table" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th>Address</th>
+                                <th>City</th>
+                                <th>State</th>
+                                <th>Zip</th>
+                                <th>Lat</th>
+                                <th>Long</th>
+                            </tr>
+                        </thead>
+                        <tbody id="preview-body">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Map Area -->
+        <main class="main-content">
+            <div id="map"></div>
+            
+            <!-- Map Controls -->
+            <div class="map-controls">
+                <button class="map-control-btn" id="fit-bounds" title="Fit all markers">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+                    </svg>
+                </button>
+                <button class="map-control-btn" id="toggle-clustering" title="Toggle clustering">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"/>
+                        <circle cx="6" cy="6" r="2"/>
+                        <circle cx="18" cy="6" r="2"/>
+                        <circle cx="6" cy="18" r="2"/>
+                        <circle cx="18" cy="18" r="2"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Status Bar -->
+            <div class="status-bar">
+                <div class="status-item">
+                    <span id="coordinates">Lat: --, Lng: --</span>
+                </div>
+                <div class="status-item">
+                    <span id="zoom-level">Zoom: --</span>
+                </div>
+                <div class="status-item" style="margin-left: auto;">
+                    <span id="map-status">Ready</span>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast -->
+    <div class="csv-toast" id="toast">
+        <span id="toast-message"></span>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="csv-upload.js"></script>
+</body>
+</html>
+

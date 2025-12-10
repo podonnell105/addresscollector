@@ -100,8 +100,29 @@ body {
     border-bottom: 1px solid var(--border-color);
 }
 
-.sidebar-toggle {
+.csv-upload-link {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition-fast);
+    text-decoration: none;
     margin-left: auto;
+}
+
+.csv-upload-link:hover {
+    background: var(--accent-gradient);
+    border-color: var(--accent-primary);
+    color: white;
+}
+
+.sidebar-toggle {
     width: 32px;
     height: 32px;
     display: flex;
